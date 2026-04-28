@@ -2,6 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
+# Simple quadrotor simulation showing altitude PD control
+# and a basic yaw PD that activates once altitude is near the
+# reference. The script integrates the nonlinear dynamics
+# and plots position, attitude, and rotor thrusts.
+
 m = 0.045
 g = 9.81
 l = 0.058
@@ -19,11 +24,19 @@ K_Q = 1.058e-10
 k_m = 803.9
 t_m = 0.07
 
-z_ref = -1.0
+# References and tolerances
+z_ref    = -1.0
+psi_ref  = np.pi / 2
+z_tol    = 0.05
 
-Kp_z = 0.3
-Kd_z = 0.2
+Kp_z   = 0.3
+Kd_z   = 0.2
 
+Kp_psi = 0.0004
+Kd_psi = 0.0002
+
+
+# Main dynamics function: returns state derivatives
 def quadrotor_dynamics(t, X):
     x, y, z = X[0:3]
     u_b, v_b, w_b = X[3:6]
@@ -44,16 +57,36 @@ def quadrotor_dynamics(t, X):
     v = np.array([u_b, v_b, w_b])
     p_dot = R.T @ v
 
-    error_z = z_ref - z
+    # Altitude PD controller: compute required total thrust
+    error_z     = z_ref - z
     error_z_dot = 0 - p_dot[2]
 
     T_total_req = m*g - (Kp_z*error_z + Kd_z*error_z_dot)
     T_total_req = np.clip(T_total_req, 0, 3*m*g)
 
-    T_individual = T_total_req / 4
-    w_des = np.sqrt(T_individual / K_T)
+    # Yaw PD controller activates when altitude is close
+    altitude_reached = abs(error_z) < z_tol
+    if altitude_reached:
+        error_psi = (psi_ref - psi + np.pi) % (2*np.pi) - np.pi
+        tau_psi   = Kp_psi * error_psi - Kd_psi * r
+    else:
+        tau_psi = 0.0
+
+    # Motor mixer: split thrust and add small thrust differences for yaw
+    T_base = T_total_req / 4
+    delta = (tau_psi * (K_T / K_Q)) / 4.0
+
+    T1_cmd = T_base + delta
+    T2_cmd = T_base - delta
+    T3_cmd = T_base + delta
+    T4_cmd = T_base - delta
+
+    T_cmds = np.clip([T1_cmd, T2_cmd, T3_cmd, T4_cmd], 0, 3*m*g/4)
+
+    # Motor first-order dynamics (voltage command -> rotor speed)
+    w_des   = np.sqrt(T_cmds / K_T)
     u_volts = w_des / k_m
-    u = np.array([u_volts, u_volts, u_volts, u_volts])
+    u       = u_volts
 
     wp_m = (k_m * u - w_m) / t_m
 
@@ -99,14 +132,14 @@ def quadrotor_dynamics(t, X):
 
     return np.concatenate((p_dot, vp, Theta_dot, wp, wp_m))
 
-# Initial conditions and simulation
+# Initial conditions and run the simulation
 X0 = np.zeros(16)
 t_span = (0, 10)
 t_eval = np.linspace(t_span[0], t_span[1], 1000)
 
 sol = solve_ivp(quadrotor_dynamics, t_span, X0, t_eval=t_eval, method='RK45')
 
-# Extract results
+# Extract states for plotting
 t = sol.t
 x, y, z = sol.y[0], sol.y[1], sol.y[2]
 phi, theta, psi = sol.y[6], sol.y[7], sol.y[8]
@@ -114,7 +147,7 @@ w_m_res = sol.y[12:16]
 T_res = K_T * (w_m_res**2)
 altitud = -z
 
-# ── Figure 1: All three plots in one figure ─────────────────────────────────
+# Plotting results: position, attitude, and rotor thrusts
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
 
 ax1.plot(t, x, label='x')
