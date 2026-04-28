@@ -129,7 +129,7 @@ Running `python quadrotorSim.py` does the following:
 	- Attitude angles (`roll, pitch, yaw`).
 4. Displays a second figure with rotor thrusts (`T1, T2, T3, T4`).
 
-No files are saved by `quadrotorSim.py` by default; it opens interactive Matplotlib windows.
+The script saves a consolidated figure named `figura_completa.png` in the working directory and also opens interactive Matplotlib windows.
 
 ## Notes and Limitations
 
