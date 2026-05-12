@@ -1,4 +1,4 @@
-# Drone Assignments
+# Drone Simulator
 
 This repository contains a small quadrotor control assignment built in Python.
 It includes:
