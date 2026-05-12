@@ -1,182 +1,149 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from scipy.signal import place_poles
 
-# Simple quadrotor simulation showing altitude PD control
-# and a basic yaw PD that activates once altitude is near the
-# reference. The script integrates the nonlinear dynamics
-# and plots position, attitude, and rotor thrusts.
-
-m = 0.045
+# ==========================================
+# PARÁMETROS DEL SISTEMA (Tabla 1 de la presentación)
+# ==========================================
+m = 0.068
 g = 9.81
-l = 0.058
+Ixx = 0.0686e-3
+Iyy = 0.092e-3
+Izz = 0.1366e-3
 
-Ixx = 3.0738e-5
-Iyy = 3.0849e-5
-Izz = 5.9680e-5
-Jr  = 5.897e-8
+# ==========================================
+# MODELO EN ESPACIO DE ESTADOS (Diapositiva 23)
+# Estado: [x, x_dot, y, y_dot, z, z_dot, phi, phi_dot, theta, theta_dot, psi, psi_dot]
+# ==========================================
+A = np.zeros((12, 12))
+A[0, 1] = 1.0; A[2, 3] = 1.0; A[4, 5] = 1.0
+A[6, 7] = 1.0; A[8, 9] = 1.0; A[10, 11] = 1.0
+A[1, 8] = g    # x_ddot = g * theta
+A[3, 6] = -g   # y_ddot = -g * phi
 
-I = np.diag([Ixx, Iyy, Izz])
-I_inv = np.linalg.inv(I)
+B = np.zeros((12, 4))
+B[5, 0] = 1/m
+B[7, 1] = 1/Ixx
+B[9, 2] = 1/Iyy
+B[11, 3] = 1/Izz
 
-K_T = 3.334e-8
-K_Q = 1.058e-10
-k_m = 803.9
-t_m = 0.07
+C = np.zeros((4, 12))
+C[0, 0] = 1.0  # x
+C[1, 2] = 1.0  # y
+C[2, 4] = 1.0  # z
+C[3, 10] = 1.0 # psi
 
-# References and tolerances
-z_ref    = -1.0
-psi_ref  = np.pi / 2
-z_tol    = 0.05
+# ==========================================
+# DISEÑO DEL CONTROLADOR (Diapositiva 25)
+# ==========================================
+# Polos deseados P dados por el profesor
+P_des = np.array([-11, -11, -9, -9, -7, -7, -8, -4, -15, -15, -3, -3])
 
-Kp_z   = 0.3
-Kd_z   = 0.2
+# Calcular matriz de ganancias K usando asignación de polos
+resultado_k = place_poles(A, B, P_des)
+K = resultado_k.gain_matrix
 
-Kp_psi = 0.0004
-Kd_psi = 0.0002
+# Calcular ganancia de pre-compensación k_bar (Diapositiva 19)
+# k_bar = (C(A-BK)^-1 B)^-1 evaluado en s=0
+A_cl = A - B @ K
+DC_gain = - C @ np.linalg.inv(A_cl) @ B 
+k_bar = np.linalg.inv(DC_gain)
 
+# ==========================================
+# SIMULACIÓN (Diapositiva 22 y 26)
+# ==========================================
+def quadrotor_linear_dynamics(t, x_state):
+    # Generación de Trayectoria (Espiral)
+    x_r = 2 * np.cos(0.2 * t)
+    y_r = 2 * np.sin(0.2 * t)
+    z_r = 0.2 * t
+    psi_r = 0.0
+    
+    # Vector de referencia
+    r = np.array([x_r, y_r, z_r, psi_r])
+    
+    # Ley de control: u = -Kx + k_bar * r
+    u = -K @ x_state + k_bar @ r
+    
+    # Dinámica lineal de lazo cerrado (Simulink)
+    x_dot = A @ x_state + B @ u
+    return x_dot
 
-# Main dynamics function: returns state derivatives
-def quadrotor_dynamics(t, X):
-    x, y, z = X[0:3]
-    u_b, v_b, w_b = X[3:6]
-    phi, theta, psi = X[6:9]
-    p, q, r = X[9:12]
-    w_m = X[12:16]
+# Condiciones iniciales (todo en 0)
+x0 = np.zeros(12)
 
-    R = np.array([
-        [np.cos(theta)*np.cos(psi), np.cos(theta)*np.sin(psi), -np.sin(theta)],
-        [np.sin(phi)*np.sin(theta)*np.cos(psi) - np.cos(phi)*np.sin(psi),
-         np.sin(phi)*np.sin(theta)*np.sin(psi) + np.cos(phi)*np.cos(psi),
-         np.sin(phi)*np.cos(theta)],
-        [np.cos(phi)*np.sin(theta)*np.cos(psi) + np.sin(phi)*np.sin(psi),
-         np.cos(phi)*np.sin(theta)*np.sin(psi) - np.sin(phi)*np.cos(psi),
-         np.cos(phi)*np.cos(theta)]
-    ])
+# Tiempo de simulación: 70 segundos
+t_span = (0, 70)
+t_eval = np.linspace(t_span[0], t_span[1], 3000)
 
-    v = np.array([u_b, v_b, w_b])
-    p_dot = R.T @ v
+sol = solve_ivp(quadrotor_linear_dynamics, t_span, x0, t_eval=t_eval)
 
-    # Altitude PD controller: compute required total thrust
-    error_z     = z_ref - z
-    error_z_dot = 0 - p_dot[2]
-
-    T_total_req = m*g - (Kp_z*error_z + Kd_z*error_z_dot)
-    T_total_req = np.clip(T_total_req, 0, 3*m*g)
-
-    # Yaw PD controller activates when altitude is close
-    altitude_reached = abs(error_z) < z_tol
-    if altitude_reached:
-        error_psi = (psi_ref - psi + np.pi) % (2*np.pi) - np.pi
-        tau_psi   = Kp_psi * error_psi - Kd_psi * r
-    else:
-        tau_psi = 0.0
-
-    # Motor mixer: split thrust and add small thrust differences for yaw
-    T_base = T_total_req / 4
-    delta = (tau_psi * (K_T / K_Q)) / 4.0
-
-    T1_cmd = T_base + delta
-    T2_cmd = T_base - delta
-    T3_cmd = T_base + delta
-    T4_cmd = T_base - delta
-
-    T_cmds = np.clip([T1_cmd, T2_cmd, T3_cmd, T4_cmd], 0, 3*m*g/4)
-
-    # Motor first-order dynamics (voltage command -> rotor speed)
-    w_des   = np.sqrt(T_cmds / K_T)
-    u_volts = w_des / k_m
-    u       = u_volts
-
-    wp_m = (k_m * u - w_m) / t_m
-
-    T = K_T * (w_m**2)
-    Q = K_Q * (w_m**2)
-
-    F_m = np.array([0, 0, -(T[0]+T[1]+T[2]+T[3])])
-    F_g = np.array([
-        -m * g * np.sin(theta),
-         m * g * np.cos(theta) * np.sin(phi),
-         m * g * np.cos(theta) * np.cos(phi)
-    ])
-    F = F_g + F_m
-
-    sqrt2_2 = np.sqrt(2) / 2
-    M_m = np.array([
-        sqrt2_2 * l * (T[1] + T[2] - T[0] - T[3]),
-        sqrt2_2 * l * (T[0] + T[1] - T[2] - T[3]),
-        Q[0] - Q[1] + Q[2] - Q[3]
-    ])
-
-    w_res = w_m[0] - w_m[1] + w_m[2] - w_m[3]
-    M_gy = np.array([
-        -Jr * q * w_res,
-         Jr * p * w_res,
-         0
-    ])
-
-    wp_res = wp_m[0] - wp_m[1] + wp_m[2] - wp_m[3]
-    M_r = np.array([0, 0, -Jr * wp_res])
-    M = M_m + M_gy + M_r
-
-    w_vec = np.array([p, q, r])
-    vp = (F / m) - np.cross(w_vec, v)
-    wp = I_inv @ (M - np.cross(w_vec, I @ w_vec))
-
-    J_inv = np.array([
-        [1, np.sin(phi)*np.tan(theta), np.cos(phi)*np.tan(theta)],
-        [0, np.cos(phi), -np.sin(phi)],
-        [0, np.sin(phi)/np.cos(theta), np.cos(phi)/np.cos(theta)]
-    ])
-    Theta_dot = J_inv @ w_vec
-
-    return np.concatenate((p_dot, vp, Theta_dot, wp, wp_m))
-
-# Initial conditions and run the simulation
-X0 = np.zeros(16)
-t_span = (0, 10)
-t_eval = np.linspace(t_span[0], t_span[1], 1000)
-
-sol = solve_ivp(quadrotor_dynamics, t_span, X0, t_eval=t_eval, method='RK45')
-
-# Extract states for plotting
+# Extraer resultados
 t = sol.t
-x, y, z = sol.y[0], sol.y[1], sol.y[2]
-phi, theta, psi = sol.y[6], sol.y[7], sol.y[8]
-w_m_res = sol.y[12:16]
-T_res = K_T * (w_m_res**2)
-altitud = -z
+x_act, y_act, z_act = sol.y[0], sol.y[2], sol.y[4]
+phi, theta, psi = sol.y[6], sol.y[8], sol.y[10]
 
-# Plotting results: position, attitude, and rotor thrusts
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
+# Referencias para graficar
+x_ref = 2 * np.cos(0.2 * t)
+y_ref = 2 * np.sin(0.2 * t)
+z_ref = 0.2 * t
 
-ax1.plot(t, x, label='x')
-ax1.plot(t, y, label='y')
-ax1.plot(t, altitud, label='Altitud (-z)', color='blue', linewidth=2)
-ax1.axhline(-z_ref, color='r', linestyle='--', label='Referencia Z')
-ax1.set_title('Posición Lineal (Control PD en Altitud)')
-ax1.set_ylabel('m')
-ax1.grid()
+# ==========================================
+# GRÁFICAS REQUERIDAS PARA LA TAREA
+# ==========================================
+fig = plt.figure(figsize=(12, 10))
+
+# 1. Gráfica 3D (Como en la diapositiva 30)
+ax1 = fig.add_subplot(2, 2, 1, projection='3d')
+ax1.plot(x_ref, y_ref, z_ref, 'k--', label='Deseada')
+ax1.plot(x_act, y_act, z_act, 'b-', label='Actual')
+ax1.set_xlabel('x - axis (m)')
+ax1.set_ylabel('y - axis (m)')
+ax1.set_zlabel('z - axis (m)')
+ax1.set_title('Trayectoria 3D')
 ax1.legend()
 
-ax2.plot(t, phi, label='roll')
-ax2.plot(t, theta, label='pitch')
-ax2.plot(t, psi, label='yaw')
-ax2.set_title('Orientación (Actitud)')
-ax2.set_ylabel('rad')
-ax2.grid()
+# 2. Poses Lineales X, Y, Z (Contra el tiempo)
+ax2 = fig.add_subplot(2, 2, 2)
+ax2.plot(t, x_ref, 'k--', alpha=0.5)
+ax2.plot(t, x_act, label='x', color='b')
+ax2.plot(t, y_ref, 'k--', alpha=0.5)
+ax2.plot(t, y_act, label='y', color='g')
+ax2.plot(t, z_ref, 'k--', alpha=0.5)
+ax2.plot(t, z_act, label='z', color='r')
+ax2.set_xlabel('Tiempo (s)')
+ax2.set_ylabel('Posición (m)')
+ax2.set_title('Seguimiento de Posición')
 ax2.legend()
+ax2.grid()
 
-ax3.plot(t, T_res[0], label='T1')
-ax3.plot(t, T_res[1], '--', label='T2')
-ax3.plot(t, T_res[2], ':', label='T3')
-ax3.plot(t, T_res[3], '-.', label='T4')
-ax3.set_title('Esfuerzo de Control (Empuje de Rotores)')
+# 3. Orientación (Actitud)
+ax3 = fig.add_subplot(2, 2, 3)
+ax3.plot(t, phi, label=r'Roll ($\phi$)')
+ax3.plot(t, theta, label=r'Pitch ($\theta$)')
+ax3.plot(t, psi, label=r'Yaw ($\psi$)')
 ax3.set_xlabel('Tiempo (s)')
-ax3.set_ylabel('Empuje (N)')
-ax3.grid()
+ax3.set_ylabel('Ángulos (rad)')
+ax3.set_title('Orientación')
 ax3.legend()
+ax3.grid()
+
+# 4. Señal de Control U (Fuerza y Torques)
+# Reconstruir U para toda la simulación
+U_hist = np.zeros((4, len(t)))
+for i in range(len(t)):
+    r_i = np.array([x_ref[i], y_ref[i], z_ref[i], 0.0])
+    U_hist[:, i] = -K @ sol.y[:, i] + k_bar @ r_i
+
+ax4 = fig.add_subplot(2, 2, 4)
+ax4.plot(t, U_hist[0, :], label='Empuje $u_1$ (N)')
+ax4.set_xlabel('Tiempo (s)')
+ax4.set_ylabel('Empuje (N)')
+ax4.set_title('Señal de Control $u_1$')
+ax4.legend()
+ax4.grid()
 
 plt.tight_layout()
-plt.savefig('figura_completa.png', dpi=150)
+plt.savefig('reporte_sf_final.png', dpi=150)
 plt.show()
