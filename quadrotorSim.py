@@ -4,7 +4,7 @@ from scipy.integrate import solve_ivp
 from scipy.signal import place_poles
 
 # ==========================================
-# PARÁMETROS DEL SISTEMA (Tabla 1 de la presentación)
+# PARÁMETROS DEL SISTEMA
 # ==========================================
 m = 0.068
 g = 9.81
@@ -13,7 +13,7 @@ Iyy = 0.092e-3
 Izz = 0.1366e-3
 
 # ==========================================
-# MODELO EN ESPACIO DE ESTADOS (Diapositiva 23)
+# MODELO EN ESPACIO DE ESTADOS
 # Estado: [x, x_dot, y, y_dot, z, z_dot, phi, phi_dot, theta, theta_dot, psi, psi_dot]
 # ==========================================
 A = np.zeros((12, 12))
@@ -35,29 +35,31 @@ C[2, 4] = 1.0  # z
 C[3, 10] = 1.0 # psi
 
 # ==========================================
-# DISEÑO DEL CONTROLADOR (Diapositiva 25)
+# DISEÑO DEL CONTROLADOR
 # ==========================================
-# Polos deseados P dados por el profesor
-P_des = np.array([-11, -11, -9, -9, -7, -7, -8, -4, -15, -15, -3, -3])
+# Polos
+P_des = np.array([-15, -15, -12, -12, -20, -20, -10, -10, -18, -18, -8, -8])
 
 # Calcular matriz de ganancias K usando asignación de polos
 resultado_k = place_poles(A, B, P_des)
 K = resultado_k.gain_matrix
 
 # Calcular ganancia de pre-compensación k_bar (Diapositiva 19)
-# k_bar = (C(A-BK)^-1 B)^-1 evaluado en s=0
 A_cl = A - B @ K
 DC_gain = - C @ np.linalg.inv(A_cl) @ B 
 k_bar = np.linalg.inv(DC_gain)
 
 # ==========================================
-# SIMULACIÓN (Diapositiva 22 y 26)
+# SIMULACIÓN CON NUEVA TRAYECTORIA
 # ==========================================
 def quadrotor_linear_dynamics(t, x_state):
-    # Generación de Trayectoria (Espiral)
-    x_r = 2 * np.cos(0.2 * t)
-    y_r = 2 * np.sin(0.2 * t)
-    z_r = 0.2 * t
+    # Generación de Trayectoria (Figura de 8 Inclinada)
+    # x oscila normal, y oscila al doble de velocidad (forma el 8)
+    x_r = 2.0 * np.sin(0.2 * t)
+    y_r = 2.0 * np.sin(0.4 * t) 
+    
+    # z tiene una altura base de 3 metros, y oscila +- 1.5 metros sincronizado con x
+    z_r = 3.0 + 1.5 * np.sin(0.2 * t) 
     psi_r = 0.0
     
     # Vector de referencia
@@ -84,27 +86,27 @@ t = sol.t
 x_act, y_act, z_act = sol.y[0], sol.y[2], sol.y[4]
 phi, theta, psi = sol.y[6], sol.y[8], sol.y[10]
 
-# Referencias para graficar
-x_ref = 2 * np.cos(0.2 * t)
-y_ref = 2 * np.sin(0.2 * t)
-z_ref = 0.2 * t
+# Referencias para graficar (Deben coincidir con las de la dinámica)
+x_ref = 2.0 * np.sin(0.2 * t)
+y_ref = 2.0 * np.sin(0.4 * t)
+z_ref = 3.0 + 1.5 * np.sin(0.2 * t)
 
 # ==========================================
-# GRÁFICAS REQUERIDAS PARA LA TAREA
+# GRÁFICAS
 # ==========================================
 fig = plt.figure(figsize=(12, 10))
 
-# 1. Gráfica 3D (Como en la diapositiva 30)
+# 1. Gráfica 3D 
 ax1 = fig.add_subplot(2, 2, 1, projection='3d')
 ax1.plot(x_ref, y_ref, z_ref, 'k--', label='Deseada')
 ax1.plot(x_act, y_act, z_act, 'b-', label='Actual')
 ax1.set_xlabel('x - axis (m)')
 ax1.set_ylabel('y - axis (m)')
 ax1.set_zlabel('z - axis (m)')
-ax1.set_title('Trayectoria 3D')
+ax1.set_title('Trayectoria 3D (Figura 8 Inclinada)')
 ax1.legend()
 
-# 2. Poses Lineales X, Y, Z (Contra el tiempo)
+# 2. Poses Lineales X, Y, Z
 ax2 = fig.add_subplot(2, 2, 2)
 ax2.plot(t, x_ref, 'k--', alpha=0.5)
 ax2.plot(t, x_act, label='x', color='b')
@@ -130,7 +132,6 @@ ax3.legend()
 ax3.grid()
 
 # 4. Señal de Control U (Fuerza y Torques)
-# Reconstruir U para toda la simulación
 U_hist = np.zeros((4, len(t)))
 for i in range(len(t)):
     r_i = np.array([x_ref[i], y_ref[i], z_ref[i], 0.0])
@@ -145,5 +146,5 @@ ax4.legend()
 ax4.grid()
 
 plt.tight_layout()
-plt.savefig('reporte_sf_final.png', dpi=150)
+plt.savefig('reporte_sf_fig8.png', dpi=150)
 plt.show()
